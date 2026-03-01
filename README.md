@@ -30,7 +30,7 @@ DLW/
 ```
 
 ## Quick Start
-1. download all the files
+1. Download all the files
 
 2. Open terminal in project root:
 
