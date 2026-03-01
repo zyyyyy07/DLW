@@ -26,25 +26,25 @@ DLW/
 │  ├─ index.html
 │  ├─ styles.css
 │  └─ app.js
-├─ learning_guidance_system.py
 └─ README.md
 ```
 
 ## Quick Start
+1. download all the files
 
-1. Open terminal in project root:
+2. Open terminal in project root:
 
 ```powershell
 python -m http.server 8080
 ```
 
-2. Open:
+3. Open:
 
 ```text
 http://localhost:8080
 ```
 
-3. In the page:
+4. In the page:
 - Upload `student_performance.csv`
 - Click `Train Model`
 - Enter student profile values
