@@ -35,7 +35,6 @@ DLW/
 1. Open terminal in project root:
 
 ```powershell
-cd C:\Users\22652\Desktop\DLW\dashboard
 python -m http.server 8080
 ```
 
