@@ -1,6 +1,6 @@
 # DLW - AI Study Advisor Dashboard
 
-An interactive, all-English web dashboard that trains a local model from student data and provides explainable learning recommendations.
+An interactive web dashboard that trains a local model from student data and provides explainable learning recommendations.
 
 ## Features
 
