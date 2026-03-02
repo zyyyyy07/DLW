@@ -4,8 +4,12 @@ import { RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis, BarChart
 // ─── DATASET STATISTICS (derived from 14,003 student records) ─────────────────
 const DATASET_STATS = {
   avgStudyHours: 20.0, avgAttendance: 80.2, avgAssignment: 74.5,
-  avgExam: 70.3, avgOnlineCourses: 9.9,
-  gradeDistribution: { 0: 0.28, 1: 0.24, 2: 0.26, 3: 0.22 }, // A,B,C,F approx
+  avgExam: 70.3, avgOnlineCourses: 9.9, avgPredictedFinal: 63.0,
+  // Approximate distribution mapped to NTU-style letter bands.
+  gradeDistribution: {
+    0: 0.05, 1: 0.09, 2: 0.11, 3: 0.14, 4: 0.14, 5: 0.13,
+    6: 0.11, 7: 0.09, 8: 0.06, 9: 0.04, 10: 0.02, 11: 0.02,
+  },
   examByStudyHours: [
     { hours: "5-10", score: 55 }, { hours: "11-15", score: 61 },
     { hours: "16-20", score: 68 }, { hours: "21-25", score: 73 },
@@ -28,32 +32,68 @@ const DATASET_STATS = {
   learningStyleScores: [71, 69, 73, 70],
 };
 
-const GRADE_LABELS = ["A (Distinction)", "B (Credit)", "C (Pass)", "F (Fail)"];
-const GRADE_COLORS = ["#10b981", "#3b82f6", "#f59e0b", "#ef4444"];
+const GRADE_LABELS = [
+  "A+ (Highest Distinction)",
+  "A (Distinction)",
+  "A- (High Distinction)",
+  "B+ (Very Good)",
+  "B (Good)",
+  "B- (Solid)",
+  "C+ (Satisfactory)",
+  "C (Adequate)",
+  "C- (Marginal Pass)",
+  "D+ (Weak Pass)",
+  "D (Bare Pass)",
+  "F (Fail)",
+];
+
+const GRADE_COLORS = [
+  "#16a34a", "#22c55e", "#4ade80",
+  "#84cc16", "#a3e635", "#facc15",
+  "#f59e0b", "#fb923c", "#f97316",
+  "#ef4444", "#dc2626", "#991b1b",
+];
 
 // ─── PERCENTILE CALCULATOR ─────────────────────────────────────────────────────
 function calcPercentile(value, col) {
   const ranges = {
-    StudyHours: [5, 44], Attendance: [60, 100],
-    AssignmentCompletion: [50, 100], ExamScore: [40, 100],
+    StudyHours: [0, 44], Attendance: [0, 100],
+    AssignmentCompletion: [50, 100], ExamScore: [0, 100],
     OnlineCourses: [0, 20],
   };
   const [min, max] = ranges[col] || [0, 100];
-  return Math.round(((value - min) / (max - min)) * 100);
+  const p = Math.round(((value - min) / (max - min)) * 100);
+  return Math.max(0, Math.min(100, p));
+}
+
+function calcLearningScore(data) {
+  // Intentionally excludes last exam score to avoid target leakage in predicted grade.
+  let score = 0;
+  score += (data.studyHours / 44) * 32;
+  score += (data.attendance / 100) * 28;
+  score += (data.assignmentCompletion / 100) * 26;
+  score += (data.motivation / 2) * 10;
+  score -= (data.stressLevel / 2) * 8;
+  if (data.eduTech) score += 6;
+  if (data.discussions) score += 4;
+  if (!data.internet) score -= 4;
+  return Math.max(0, Math.min(100, Math.round(score)));
 }
 
 function predictGrade(data) {
-  let score = 0;
-  score += (data.studyHours / 44) * 25;
-  score += (data.attendance / 100) * 20;
-  score += (data.assignmentCompletion / 100) * 20;
-  score += (data.examScore / 100) * 25;
-  score += (data.motivation / 2) * 5;
-  score -= (data.stressLevel / 2) * 5;
-  if (score >= 75) return 0;
-  if (score >= 60) return 1;
-  if (score >= 45) return 2;
-  return 3;
+  const score = calcLearningScore(data);
+  if (score >= 90) return 0;   // A+
+  if (score >= 85) return 1;   // A
+  if (score >= 80) return 2;   // A-
+  if (score >= 75) return 3;   // B+
+  if (score >= 70) return 4;   // B
+  if (score >= 65) return 5;   // B-
+  if (score >= 60) return 6;   // C+
+  if (score >= 55) return 7;   // C
+  if (score >= 50) return 8;   // C-
+  if (score >= 45) return 9;   // D+
+  if (score >= 40) return 10;  // D
+  return 11;                   // F
 }
 
 function computeRisks(data) {
@@ -261,6 +301,7 @@ export default function App() {
   const [chatLoading, setChatLoading] = useState(false);
 
   const predicted = predictGrade(studentData);
+  const predictedFinalScore = calcLearningScore(studentData);
   const risks = computeRisks(studentData);
 
   async function requestCoachCompletion(messages, { temperature = 0.35, maxTokens = 900 } = {}) {
@@ -442,6 +483,7 @@ Please provide a structured JSON response (and ONLY JSON, no markdown) with this
       data={studentData}
       predicted={predicted}
       risks={risks}
+      predictedFinalScore={predictedFinalScore}
       aiInsights={aiInsights}
       loading={loading}
       aiError={aiError}
@@ -552,7 +594,7 @@ function InputPage({ data, setData, onAnalyze, onBack }) {
             </div>
             <div>
               <div style={S.label}>Age: {data.age}</div>
-              <input type="range" min={18} max={29} style={S.range} value={data.age} onChange={e => set("age", +e.target.value)} />
+              <input type="range" min={0} max={60} style={S.range} value={data.age} onChange={e => set("age", +e.target.value)} />
             </div>
             <div>
               <div style={S.label}>Gender</div>
@@ -570,21 +612,21 @@ function InputPage({ data, setData, onAnalyze, onBack }) {
           <div style={S.grid2}>
             <div>
               <div style={S.label}>Study Hours per Week: <b style={{ color: "#38bdf8" }}>{data.studyHours}h</b> <span style={{ color: "#64748b" }}>(peer avg: 20h)</span></div>
-              <input type="range" min={5} max={44} style={S.range} value={data.studyHours} onChange={e => set("studyHours", +e.target.value)} />
+              <input type="range" min={0} max={44} style={S.range} value={data.studyHours} onChange={e => set("studyHours", +e.target.value)} />
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#475569", marginTop: 4 }}>
-                <span>5h</span><span>44h</span>
+                <span>0h</span><span>44h</span>
               </div>
             </div>
             <div>
               <div style={S.label}>Attendance: <b style={{ color: "#38bdf8" }}>{data.attendance}%</b> <span style={{ color: "#64748b" }}>(peer avg: 80.2%)</span></div>
-              <input type="range" min={60} max={100} style={S.range} value={data.attendance} onChange={e => set("attendance", +e.target.value)} />
+              <input type="range" min={0} max={100} style={S.range} value={data.attendance} onChange={e => set("attendance", +e.target.value)} />
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#475569", marginTop: 4 }}>
-                <span>60%</span><span>100%</span>
+                <span>0%</span><span>100%</span>
               </div>
             </div>
             <div>
               <div style={S.label}>Last Exam Score: <b style={{ color: "#38bdf8" }}>{data.examScore}/100</b> <span style={{ color: "#64748b" }}>(peer avg: 70.3)</span></div>
-              <input type="range" min={40} max={100} style={S.range} value={data.examScore} onChange={e => set("examScore", +e.target.value)} />
+              <input type="range" min={0} max={100} style={S.range} value={data.examScore} onChange={e => set("examScore", +e.target.value)} />
             </div>
             <div>
               <div style={S.label}>Assignment Completion: <b style={{ color: "#38bdf8" }}>{data.assignmentCompletion}%</b> <span style={{ color: "#64748b" }}>(peer avg: 74.5%)</span></div>
@@ -691,6 +733,7 @@ function Dashboard({
   data,
   predicted,
   risks,
+  predictedFinalScore,
   aiInsights,
   loading,
   aiError,
@@ -763,8 +806,8 @@ function Dashboard({
           </div>
           <div style={{ width: 1, background: "#1e2d42" }} />
           <div style={{ textAlign: "center" }}>
-            <div style={{ ...S.statNum, color: "#38bdf8", fontSize: 40 }}>{data.examScore}</div>
-            <div style={{ fontSize: 12, color: "#64748b" }}>Exam Score</div>
+            <div style={{ ...S.statNum, color: "#38bdf8", fontSize: 40 }}>{predictedFinalScore}</div>
+            <div style={{ fontSize: 12, color: "#64748b" }}>Predicted Final Score</div>
           </div>
           <div style={{ width: 1, background: "#1e2d42" }} />
           <div style={{ textAlign: "center" }}>
@@ -805,7 +848,7 @@ function Dashboard({
                   { label: "Study Hours", you: data.studyHours, peer: DATASET_STATS.avgStudyHours, unit: "h/wk", max: 44 },
                   { label: "Attendance", you: data.attendance, peer: DATASET_STATS.avgAttendance, unit: "%", max: 100 },
                   { label: "Assignment", you: data.assignmentCompletion, peer: DATASET_STATS.avgAssignment, unit: "%", max: 100 },
-                  { label: "Exam Score", you: data.examScore, peer: DATASET_STATS.avgExam, unit: "/100", max: 100 },
+                  { label: "Predicted Final", you: predictedFinalScore, peer: DATASET_STATS.avgPredictedFinal, unit: "/100", max: 100 },
                 ].map(m => (
                   <div key={m.label} style={{ marginBottom: 16 }}>
                     <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6, fontSize: 13 }}>
@@ -875,7 +918,7 @@ function Dashboard({
                 ))}
               </div>
               <p style={{ fontSize: 13, color: "#475569", marginTop: 16, marginBottom: 0 }}>
-                * Based on a weighted model using study hours (25%), attendance (20%), assignments (20%), exam score (25%), motivation and stress (10%). Trained on 14,003 student records.
+                * Predicted grade is based on study habits and learning behaviors (study hours, attendance, assignments, motivation, stress, EdTech usage, and discussion participation). Last exam score is shown separately and not used directly in grade prediction.
               </p>
             </div>
           </div>
@@ -1194,7 +1237,9 @@ function Dashboard({
                   </div>
                 ))}
               </div>
-              <p style={{ fontSize: 13, color: "#475569", margin: 0 }}>Bright bars = your predicted grade. Distribution shows roughly equal spread across A/B/C with slightly fewer F grades, suggesting the curriculum is calibrated for ~75% pass rates.</p>
+              <p style={{ fontSize: 13, color: "#475569", margin: 0 }}>
+                Bright bar = your predicted NTU-style letter band. Distribution is shown across A+ to F to provide finer performance granularity.
+              </p>
             </div>
           </div>
         )}
