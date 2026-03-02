@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, Area, AreaChart, ScatterChart, Scatter, Cell } from "recharts";
+import { MODEL_PARAMS } from "./modelParams";
 
 // ─── DATASET STATISTICS (derived from 14,003 student records) ─────────────────
 const DATASET_STATS = {
   avgStudyHours: 20.0, avgAttendance: 80.2, avgAssignment: 74.5,
-  avgExam: 70.3, avgOnlineCourses: 9.9, avgPredictedFinal: 63.0,
+  avgExam: 70.3, avgOnlineCourses: 9.9, avgPredictedFinal: MODEL_PARAMS.averages?.predictedFinal ?? 63.0,
   // Approximate distribution mapped to NTU-style letter bands.
   gradeDistribution: {
     0: 0.05, 1: 0.09, 2: 0.11, 3: 0.14, 4: 0.14, 5: 0.13,
@@ -58,7 +59,7 @@ const GRADE_COLORS = [
 function calcPercentile(value, col) {
   const ranges = {
     StudyHours: [0, 44], Attendance: [0, 100],
-    AssignmentCompletion: [50, 100], ExamScore: [0, 100],
+    AssignmentCompletion: [0, 100], ExamScore: [0, 100],
     OnlineCourses: [0, 20],
   };
   const [min, max] = ranges[col] || [0, 100];
@@ -67,33 +68,29 @@ function calcPercentile(value, col) {
 }
 
 function calcLearningScore(data) {
-  // Intentionally excludes last exam score to avoid target leakage in predicted grade.
-  let score = 0;
-  score += (data.studyHours / 44) * 32;
-  score += (data.attendance / 100) * 28;
-  score += (data.assignmentCompletion / 100) * 26;
-  score += (data.motivation / 2) * 10;
-  score -= (data.stressLevel / 2) * 8;
-  if (data.eduTech) score += 6;
-  if (data.discussions) score += 4;
-  if (!data.internet) score -= 4;
-  return Math.max(0, Math.min(100, Math.round(score)));
+  let score = MODEL_PARAMS.intercept ?? 0;
+
+  for (const feature of MODEL_PARAMS.features || []) {
+    const raw = Number(data[feature.key] ?? 0);
+    const min = Number(feature.min ?? 0);
+    const max = Number(feature.max ?? 1);
+    const span = max - min;
+    const normalized = span > 0 ? Math.max(0, Math.min(1, (raw - min) / span)) : 0;
+    score += normalized * Number(feature.weight ?? 0);
+  }
+
+  const low = Number(MODEL_PARAMS.scoreClamp?.[0] ?? 0);
+  const high = Number(MODEL_PARAMS.scoreClamp?.[1] ?? 100);
+  return Math.max(low, Math.min(high, Math.round(score)));
 }
 
 function predictGrade(data) {
   const score = calcLearningScore(data);
-  if (score >= 90) return 0;   // A+
-  if (score >= 85) return 1;   // A
-  if (score >= 80) return 2;   // A-
-  if (score >= 75) return 3;   // B+
-  if (score >= 70) return 4;   // B
-  if (score >= 65) return 5;   // B-
-  if (score >= 60) return 6;   // C+
-  if (score >= 55) return 7;   // C
-  if (score >= 50) return 8;   // C-
-  if (score >= 45) return 9;   // D+
-  if (score >= 40) return 10;  // D
-  return 11;                   // F
+  const thresholds = MODEL_PARAMS.gradeThresholds || [];
+  for (let i = 0; i < thresholds.length; i += 1) {
+    if (score >= thresholds[i]) return i;
+  }
+  return GRADE_LABELS.length - 1;
 }
 
 function computeRisks(data) {
@@ -184,6 +181,7 @@ const APP_NAME = "Start Learning but 404 Brain Not Found AI";
 const HF_MODEL = import.meta.env.VITE_HF_MODEL || "meta-llama/Llama-3.1-8B-Instruct:fastest";
 const HF_DEV_ENDPOINT = "/api/hf-chat";
 const HF_PROD_ENDPOINT = "https://router.huggingface.co/v1/chat/completions";
+const ANALYSIS_HISTORY_KEY = "learning_state_history_v1";
 
 function normalizeAssistantContent(content) {
   if (typeof content === "string") return content;
@@ -283,6 +281,170 @@ Baseline AI analysis:
 ${compactInsights}`;
 }
 
+function safeNumber(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function loadAnalysisHistory() {
+  try {
+    const raw = localStorage.getItem(ANALYSIS_HISTORY_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.slice(-12) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveAnalysisHistory(items) {
+  try {
+    localStorage.setItem(ANALYSIS_HISTORY_KEY, JSON.stringify(items.slice(-12)));
+  } catch {
+    // Ignore storage errors in restricted browsers.
+  }
+}
+
+function getFeatureLabel(key) {
+  const labels = {
+    studyHours: "Study Hours",
+    attendance: "Attendance",
+    resources: "Resources",
+    extracurricular: "Extracurricular",
+    motivation: "Motivation",
+    internet: "Internet Access",
+    gender: "Gender",
+    age: "Age",
+    learningStyle: "Learning Style",
+    onlineCourses: "Online Courses",
+    discussions: "Discussions",
+    assignmentCompletion: "Assignment Completion",
+    eduTech: "EdTech Usage",
+    stressLevel: "Stress Level",
+  };
+  return labels[key] || key;
+}
+
+function computeFeatureContributions(data) {
+  const rows = (MODEL_PARAMS.features || []).map((feature) => {
+    const min = safeNumber(feature.min, 0);
+    const max = safeNumber(feature.max, 1);
+    const span = max - min;
+    const raw = safeNumber(data[feature.key], min);
+    const normalized = span > 0 ? Math.max(0, Math.min(1, (raw - min) / span)) : 0;
+    return {
+      key: feature.key,
+      label: getFeatureLabel(feature.key),
+      contribution: normalized * safeNumber(feature.weight, 0),
+    };
+  });
+
+  const positive = rows
+    .filter((r) => r.contribution >= 0)
+    .sort((a, b) => b.contribution - a.contribution)
+    .slice(0, 4);
+  const negative = rows
+    .filter((r) => r.contribution < 0)
+    .sort((a, b) => a.contribution - b.contribution)
+    .slice(0, 4);
+
+  return { positive, negative };
+}
+
+function buildBudgetPlan(data, studyBudgetHours = 6) {
+  const budget = Math.max(1, safeNumber(studyBudgetHours, 6));
+  const actions = [];
+
+  const addAction = (title, reason, hourCost, gain, target) => {
+    if (gain <= 0 || hourCost <= 0) return;
+    actions.push({
+      title,
+      reason,
+      hourCost,
+      gain,
+      gainPerHour: gain / hourCost,
+      target,
+    });
+  };
+
+  const studyGap = Math.max(0, 28 - safeNumber(data.studyHours, 0));
+  addAction(
+    "Add focused deep-work study blocks",
+    "Higher weekly study consistency has strong score impact.",
+    Math.min(4, Math.max(1, Math.ceil(studyGap / 3))),
+    studyGap * 0.55,
+    `${Math.min(30, safeNumber(data.studyHours, 0) + Math.min(8, studyGap))}h/week`
+  );
+
+  const attendanceGap = Math.max(0, 90 - safeNumber(data.attendance, 0));
+  addAction(
+    "Improve attendance reliability",
+    "Attendance gains reduce concept gaps and late revision pressure.",
+    Math.min(3, Math.max(1, Math.ceil(attendanceGap / 10))),
+    attendanceGap * 0.14,
+    `${Math.min(100, safeNumber(data.attendance, 0) + Math.min(12, attendanceGap))}%`
+  );
+
+  const assignmentGap = Math.max(0, 90 - safeNumber(data.assignmentCompletion, 0));
+  addAction(
+    "Raise assignment completion quality",
+    "Assignment completion strongly supports grade stability.",
+    Math.min(3, Math.max(1, Math.ceil(assignmentGap / 12))),
+    assignmentGap * 0.12,
+    `${Math.min(100, safeNumber(data.assignmentCompletion, 0) + Math.min(15, assignmentGap))}%`
+  );
+
+  if (safeNumber(data.stressLevel, 1) > 0) {
+    addAction(
+      "Lower stress load using scheduled breaks",
+      "Lower stress improves attention and exam execution quality.",
+      2,
+      safeNumber(data.stressLevel, 1) === 2 ? 5.5 : 2.5,
+      safeNumber(data.stressLevel, 1) === 2 ? "High -> Medium" : "Medium -> Low"
+    );
+  }
+
+  if (!safeNumber(data.discussions, 0)) {
+    addAction(
+      "Add one discussion session",
+      "Discussion-based active recall improves retention.",
+      1,
+      1.8,
+      "1 session/week"
+    );
+  }
+
+  if (!safeNumber(data.eduTech, 0)) {
+    addAction(
+      "Use one EdTech practice tool",
+      "EdTech tracking improves completion consistency.",
+      1,
+      1.3,
+      "1 tool integrated this week"
+    );
+  }
+
+  const selected = [];
+  let used = 0;
+  actions
+    .sort((a, b) => b.gainPerHour - a.gainPerHour)
+    .forEach((action) => {
+      if (used + action.hourCost <= budget) {
+        selected.push(action);
+        used += action.hourCost;
+      }
+    });
+
+  const expectedGain = Number(selected.reduce((sum, a) => sum + a.gain, 0).toFixed(1));
+  return {
+    budget,
+    used,
+    remaining: Math.max(0, budget - used),
+    expectedGain,
+    actions: selected,
+  };
+}
+
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function App() {
   const [page, setPage] = useState("home"); // home | dashboard | insights
@@ -299,10 +461,13 @@ export default function App() {
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
+  const [analysisHistory, setAnalysisHistory] = useState(() => loadAnalysisHistory());
 
   const predicted = predictGrade(studentData);
   const predictedFinalScore = calcLearningScore(studentData);
   const risks = computeRisks(studentData);
+  const featureContributions = computeFeatureContributions(studentData);
+  const budgetPlan = buildBudgetPlan(studentData, 6);
 
   async function requestCoachCompletion(messages, { temperature = 0.35, maxTokens = 900 } = {}) {
     const endpoint = import.meta.env.DEV ? HF_DEV_ENDPOINT : HF_PROD_ENDPOINT;
@@ -368,6 +533,7 @@ STUDENT PROFILE:
 - Has internet access: ${studentData.internet ? "Yes" : "No"}
 - Participates in discussions: ${studentData.discussions ? "Yes" : "No"}
 - Predicted Grade: ${gradeLabel}
+- Predicted Final Score (deterministic model output): ${predictedFinalScore}/100
 
 RISK FACTORS IDENTIFIED:
 ${riskSummary || "No major risk factors detected."}
@@ -426,6 +592,17 @@ Please provide a structured JSON response (and ONLY JSON, no markdown) with this
         },
       ]);
     } finally {
+      const snapshot = {
+        ts: new Date().toISOString(),
+        predictedFinalScore,
+        predictedGrade: GRADE_LABELS[predicted].split(" ")[0],
+        riskCount: risks.length,
+      };
+      setAnalysisHistory((prev) => {
+        const next = [...prev, snapshot].slice(-12);
+        saveAnalysisHistory(next);
+        return next;
+      });
       setLoading(false);
     }
   }
@@ -484,6 +661,9 @@ Please provide a structured JSON response (and ONLY JSON, no markdown) with this
       predicted={predicted}
       risks={risks}
       predictedFinalScore={predictedFinalScore}
+      featureContributions={featureContributions}
+      budgetPlan={budgetPlan}
+      analysisHistory={analysisHistory}
       aiInsights={aiInsights}
       loading={loading}
       aiError={aiError}
@@ -630,7 +810,7 @@ function InputPage({ data, setData, onAnalyze, onBack }) {
             </div>
             <div>
               <div style={S.label}>Assignment Completion: <b style={{ color: "#38bdf8" }}>{data.assignmentCompletion}%</b> <span style={{ color: "#64748b" }}>(peer avg: 74.5%)</span></div>
-              <input type="range" min={50} max={100} style={S.range} value={data.assignmentCompletion} onChange={e => set("assignmentCompletion", +e.target.value)} />
+              <input type="range" min={0} max={100} style={S.range} value={data.assignmentCompletion} onChange={e => set("assignmentCompletion", +e.target.value)} />
             </div>
           </div>
         </div>
@@ -734,6 +914,9 @@ function Dashboard({
   predicted,
   risks,
   predictedFinalScore,
+  featureContributions,
+  budgetPlan,
+  analysisHistory,
   aiInsights,
   loading,
   aiError,
@@ -760,6 +943,11 @@ function Dashboard({
   const chatEndRef = useRef(null);
 
   const tabs = ["overview", "analysis", "ai-coach", "data-insights"];
+  const trendData = (analysisHistory || []).map((item, i) => ({
+    idx: i + 1,
+    score: item.predictedFinalScore,
+    risk: item.riskCount,
+  }));
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -868,6 +1056,56 @@ function Dashboard({
               </div>
             </div>
 
+            <div style={S.grid2}>
+              <div style={S.card}>
+                <div style={S.cardTitle}>Model Drivers (Deterministic)</div>
+                <div style={{ fontSize: 12, color: "#64748b", marginBottom: 12 }}>
+                  Predicted final score is computed directly from trained model weights, not from LLM text.
+                </div>
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: 12, color: "#10b981", marginBottom: 8, fontWeight: 700 }}>Positive contributors</div>
+                  {(featureContributions.positive || []).slice(0, 3).map((item) => (
+                    <div key={item.key} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 6 }}>
+                      <span style={{ color: "#94a3b8" }}>{item.label}</span>
+                      <span style={{ color: "#10b981", fontFamily: "'Space Mono', monospace" }}>+{item.contribution.toFixed(2)}</span>
+                    </div>
+                  ))}
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, color: "#ef4444", marginBottom: 8, fontWeight: 700 }}>Negative contributors</div>
+                  {(featureContributions.negative || []).slice(0, 3).map((item) => (
+                    <div key={item.key} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 6 }}>
+                      <span style={{ color: "#94a3b8" }}>{item.label}</span>
+                      <span style={{ color: "#ef4444", fontFamily: "'Space Mono', monospace" }}>{item.contribution.toFixed(2)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div style={S.card}>
+                <div style={S.cardTitle}>Budget-Optimized Action Plan</div>
+                <div style={{ fontSize: 12, color: "#64748b", marginBottom: 12 }}>
+                  Budget: {budgetPlan.budget}h/week | Planned: {budgetPlan.used}h | Expected uplift: +{budgetPlan.expectedGain}
+                </div>
+                {(budgetPlan.actions || []).length === 0 ? (
+                  <div style={{ color: "#94a3b8", fontSize: 13 }}>No extra action needed for current budget. Keep current habits and review next week.</div>
+                ) : (
+                  (budgetPlan.actions || []).map((action, idx) => (
+                    <div key={`${action.title}-${idx}`} style={{ padding: "10px 0", borderBottom: idx < budgetPlan.actions.length - 1 ? "1px solid #1e2d42" : "none" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                        <div style={{ fontSize: 13, fontWeight: 700 }}>{action.title}</div>
+                        <div style={{ fontSize: 12, color: "#38bdf8", fontFamily: "'Space Mono', monospace" }}>
+                          {action.hourCost}h / +{action.gain.toFixed(1)}
+                        </div>
+                      </div>
+                      <div style={{ fontSize: 12, color: "#64748b", marginTop: 4 }}>{action.reason}</div>
+                      <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 4 }}>Target: {action.target}</div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
             {/* Risk Factors */}
             <div style={S.card}>
               <div style={S.cardTitle}>⚠️ Risk Factors</div>
@@ -898,6 +1136,27 @@ function Dashboard({
               )}
             </div>
 
+            <div style={S.card}>
+              <div style={S.cardTitle}>Learning Trend (Recent Analyses)</div>
+              {trendData.length < 2 ? (
+                <div style={{ fontSize: 13, color: "#64748b" }}>
+                  Run analysis multiple times after updating inputs to track score/risk trend.
+                </div>
+              ) : (
+                <ResponsiveContainer width="100%" height={220}>
+                  <LineChart data={trendData}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#1e2d42" />
+                    <XAxis dataKey="idx" tick={{ fill: "#64748b", fontSize: 11 }} />
+                    <YAxis yAxisId="left" domain={[0, 100]} tick={{ fill: "#64748b", fontSize: 11 }} />
+                    <YAxis yAxisId="right" orientation="right" tick={{ fill: "#64748b", fontSize: 11 }} />
+                    <Tooltip contentStyle={{ background: "#0d1520", border: "1px solid #1e2d42", borderRadius: 8, color: "#e2e8f0" }} />
+                    <Line yAxisId="left" type="monotone" dataKey="score" stroke="#38bdf8" strokeWidth={2} name="Predicted Final Score" />
+                    <Line yAxisId="right" type="monotone" dataKey="risk" stroke="#ef4444" strokeWidth={2} name="Risk Count" />
+                  </LineChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+
             {/* Grade Prediction */}
             <div style={S.card}>
               <div style={S.cardTitle}>🎓 Grade Prediction</div>
@@ -918,7 +1177,7 @@ function Dashboard({
                 ))}
               </div>
               <p style={{ fontSize: 13, color: "#475569", marginTop: 16, marginBottom: 0 }}>
-                * Predicted grade is based on study habits and learning behaviors (study hours, attendance, assignments, motivation, stress, EdTech usage, and discussion participation). Last exam score is shown separately and not used directly in grade prediction.
+                * Predicted grade and final score are generated by an auto-trained ridge regression model fitted on 14,003 records. Last exam score is shown separately and not used as an input feature in this predictor.
               </p>
             </div>
           </div>
