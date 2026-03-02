@@ -76,13 +76,13 @@ macOS/Linux:
 cp .env.example .env
 ```
 
-3. Configure `.env` (recommended for local development):
-```env
+3. Add your Hugging Face token in `.env`:
+```env:
 HF_API_KEY=hf_your_token_here
 VITE_HF_MODEL=meta-llama/Llama-3.1-8B-Instruct:fastest
 ```
 
-4. Train model params (optional if `src/modelParams.js` already exists):
+4. Train model parameters (optional if `src/modelParams.js` already exists):
 ```bash
 npm run train:model
 ```
