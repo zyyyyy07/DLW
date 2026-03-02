@@ -15,7 +15,8 @@ const DATASET_STATS = {
     { hours: "5-10", score: 55 }, { hours: "11-15", score: 61 },
     { hours: "16-20", score: 68 }, { hours: "21-25", score: 73 },
     { hours: "26-30", score: 78 }, { hours: "31-35", score: 82 },
-    { hours: "36-44", score: 86 },
+    { hours: "36-44", score: 86 }, { hours: "45-55", score: 87 },
+    { hours: "56-70", score: 87 },
   ],
   examByAttendance: [
     { band: "60-70%", score: 62 }, { band: "71-80%", score: 69 },
@@ -58,7 +59,7 @@ const GRADE_COLORS = [
 // ─── PERCENTILE CALCULATOR ─────────────────────────────────────────────────────
 function calcPercentile(value, col) {
   const ranges = {
-    StudyHours: [0, 44], Attendance: [0, 100],
+    StudyHours: [0, 70], Attendance: [0, 100],
     AssignmentCompletion: [0, 100], ExamScore: [0, 100],
     OnlineCourses: [0, 20],
   };
@@ -97,6 +98,7 @@ function computeRisks(data) {
   const risks = [];
   if (data.attendance < 75) risks.push({ factor: "Attendance", severity: "high", msg: "Below 75% attendance strongly correlates with grade drops" });
   if (data.studyHours < 15) risks.push({ factor: "Study Hours", severity: "high", msg: "< 15hrs/week puts you in the bottom 25th percentile" });
+  if (data.studyHours > 55) risks.push({ factor: "Study Load", severity: "medium", msg: "> 55hrs/week can reduce learning efficiency due to fatigue. Prioritize recovery and focus quality." });
   if (data.assignmentCompletion < 65) risks.push({ factor: "Assignments", severity: "medium", msg: "Assignment completion below 65% significantly impacts final grade" });
   if (data.stressLevel === 2) risks.push({ factor: "Stress", severity: "medium", msg: "High stress correlates with a 15-point exam score drop on average" });
   if (data.motivation === 0) risks.push({ factor: "Motivation", severity: "medium", msg: "Low motivation is the #1 predictor of disengagement over time" });
@@ -202,6 +204,7 @@ function extractJsonPayload(text) {
 function getDataDrivenTips(data) {
   const tips = [];
   if (data.studyHours < 20) tips.push("Increase study time to at least 20h/week - this is a key threshold for above-average outcomes.");
+  if (data.studyHours > 55) tips.push("Your weekly load is very high. Shift toward quality-focused sessions and recovery to avoid burnout.");
   if (data.attendance < 80) tips.push("Prioritize class attendance - attendance above 80% strongly links to grade-band improvement.");
   if (data.stressLevel === 2) tips.push("Reduce stress with 25-minute study blocks, better sleep (7-8h), and short recovery breaks.");
   if (!data.eduTech) tips.push("Start using EdTech tools (LMS, flashcards, online practice) to improve completion consistency.");
@@ -792,9 +795,9 @@ function InputPage({ data, setData, onAnalyze, onBack }) {
           <div style={S.grid2}>
             <div>
               <div style={S.label}>Study Hours per Week: <b style={{ color: "#38bdf8" }}>{data.studyHours}h</b> <span style={{ color: "#64748b" }}>(peer avg: 20h)</span></div>
-              <input type="range" min={0} max={44} style={S.range} value={data.studyHours} onChange={e => set("studyHours", +e.target.value)} />
+              <input type="range" min={0} max={70} style={S.range} value={data.studyHours} onChange={e => set("studyHours", +e.target.value)} />
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#475569", marginTop: 4 }}>
-                <span>0h</span><span>44h</span>
+                <span>0h</span><span>70h</span>
               </div>
             </div>
             <div>
@@ -1033,7 +1036,7 @@ function Dashboard({
               <div style={S.card}>
                 <div style={S.cardTitle}>📊 Key Metrics vs Peers</div>
                 {[
-                  { label: "Study Hours", you: data.studyHours, peer: DATASET_STATS.avgStudyHours, unit: "h/wk", max: 44 },
+                  { label: "Study Hours", you: data.studyHours, peer: DATASET_STATS.avgStudyHours, unit: "h/wk", max: 70 },
                   { label: "Attendance", you: data.attendance, peer: DATASET_STATS.avgAttendance, unit: "%", max: 100 },
                   { label: "Assignment", you: data.assignmentCompletion, peer: DATASET_STATS.avgAssignment, unit: "%", max: 100 },
                   { label: "Predicted Final", you: predictedFinalScore, peer: DATASET_STATS.avgPredictedFinal, unit: "/100", max: 100 },
@@ -1198,7 +1201,7 @@ function Dashboard({
                     <Tooltip contentStyle={{ background: "#0d1520", border: "1px solid #1e2d42", borderRadius: 8, color: "#e2e8f0" }} />
                     <Bar dataKey="score" radius={[4, 4, 0, 0]}>
                       {DATASET_STATS.examByStudyHours.map((entry, i) => {
-                        const inRange = (data.studyHours <= [10, 15, 20, 25, 30, 35, 44][i] && data.studyHours > [0, 10, 15, 20, 25, 30, 35][i]);
+                        const inRange = (data.studyHours <= [10, 15, 20, 25, 30, 35, 44, 55, 70][i] && data.studyHours > [0, 10, 15, 20, 25, 30, 35, 44, 55][i]);
                         return <Cell key={i} fill={inRange ? "#38bdf8" : "#1e3a5f"} />;
                       })}
                     </Bar>

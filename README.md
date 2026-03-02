@@ -16,6 +16,7 @@ This project addresses the hackathon goal of modeling a student's evolving learn
 - Risk detection panel with concrete factor-level warnings.
 - Budget-optimized weekly plan (greedy selection by gain-per-hour).
 - Learning trend chart across recent analyses (score/risk trajectory).
+- Study-hours input supports `0-70h/week`, with analysis bins and ranges aligned to this upper bound.
 
 ## Algorithms and Methods
 ### 1) Predictive Model (Deterministic)
