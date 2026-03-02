@@ -1,16 +1,40 @@
-# React + Vite
+﻿# Student Learning AI Dashboard
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React + Vite learning analytics app with:
+- dataset-driven student performance benchmarking
+- AI Coach insights powered by Hugging Face online LLMs
+- interactive AI Coach chatbot for follow-up Q&A
 
-Currently, two official plugins are available:
+## Quick Start
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+1. Install dependencies
+```bash
+npm install
+```
 
-## React Compiler
+2. Create env file from template
+```bash
+cp .env.example .env
+```
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+3. Add your Hugging Face token in `.env`
+```env
+HF_API_KEY=hf_xxxxxxxxxxxxxxxxx
+VITE_HF_MODEL=meta-llama/Llama-3.1-8B-Instruct:fastest
+```
 
-## Expanding the ESLint configuration
+4. Start development server
+```bash
+npm run dev
+```
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+## AI Coach Notes
+
+- The app uses Hugging Face chat completions via `/api/hf-chat` in development.
+- Vite proxy injects `HF_API_KEY` server-side in dev mode.
+- If the model call fails, the UI falls back to data-driven insights.
+
+## Branding
+
+- Home page `BETA · v1.0` badge removed.
+- App name: `Start Learning but 404 Brain Not Found AI`.

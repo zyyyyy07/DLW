@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, Area, AreaChart, ScatterChart, Scatter, Cell } from "recharts";
 
 // ─── DATASET STATISTICS (derived from 14,003 student records) ─────────────────
@@ -140,6 +140,108 @@ const S = {
 };
 
 const RISK_COLORS = { high: "#ef4444", medium: "#f59e0b", low: "#10b981" };
+const APP_NAME = "Start Learning but 404 Brain Not Found AI";
+const HF_MODEL = import.meta.env.VITE_HF_MODEL || "meta-llama/Llama-3.1-8B-Instruct:fastest";
+const HF_DEV_ENDPOINT = "/api/hf-chat";
+const HF_PROD_ENDPOINT = "https://router.huggingface.co/v1/chat/completions";
+
+function normalizeAssistantContent(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map(part => (typeof part === "string" ? part : part?.text || "")).join("");
+}
+
+function extractJsonPayload(text) {
+  const clean = (text || "").replace(/```json|```/gi, "").trim();
+  const start = clean.indexOf("{");
+  const end = clean.lastIndexOf("}");
+  if (start === -1 || end === -1 || end <= start) {
+    throw new Error("No JSON payload returned by model.");
+  }
+  return clean.slice(start, end + 1);
+}
+
+function getDataDrivenTips(data) {
+  const tips = [];
+  if (data.studyHours < 20) tips.push("Increase study time to at least 20h/week - this is a key threshold for above-average outcomes.");
+  if (data.attendance < 80) tips.push("Prioritize class attendance - attendance above 80% strongly links to grade-band improvement.");
+  if (data.stressLevel === 2) tips.push("Reduce stress with 25-minute study blocks, better sleep (7-8h), and short recovery breaks.");
+  if (!data.eduTech) tips.push("Start using EdTech tools (LMS, flashcards, online practice) to improve completion consistency.");
+  if (!data.discussions) tips.push("Join discussions or a study group - active recall and explaining concepts improves retention.");
+  if (tips.length === 0) tips.push("Your fundamentals are solid. Focus on exam technique and timed practice to reach the next band.");
+  return tips;
+}
+
+function buildCoachIntroMessage(name, insights) {
+  const strengths = (insights?.topStrengths || []).slice(0, 3);
+  const weaknesses = (insights?.criticalWeaknesses || []).slice(0, 3);
+  const quickWins = (insights?.quickWins || []).slice(0, 3);
+
+  const formatList = (items) => (items.length ? items.map((item, i) => `${i + 1}. ${item}`).join("\n") : "1. No key items returned.");
+
+  return [
+    `Hi ${name || "Student"}, I am your AI Coach chatbot.`,
+    "",
+    "Snapshot of your current learning state:",
+    insights?.learningState || "No summary returned from model.",
+    "",
+    "Top strengths:",
+    formatList(strengths),
+    "",
+    "Priority weaknesses:",
+    formatList(weaknesses),
+    "",
+    "Quick wins for this week:",
+    formatList(quickWins),
+    "",
+    "Ask me follow-up questions like:",
+    "- Build me a 7-day revision plan",
+    "- How can I improve exam score by 10 points?",
+    "- Which habit should I fix first and why?",
+  ].join("\n");
+}
+
+function buildCoachSystemPrompt(data, predicted, risks, insights) {
+  const learningStyle = DATASET_STATS.learningStyleNames[data.learningStyle];
+  const riskSummary = risks.length
+    ? risks.map((r, i) => `${i + 1}) ${r.factor} [${r.severity}] - ${r.msg}`).join("\n")
+    : "No major risk factors detected.";
+
+  const compactInsights = JSON.stringify({
+    learningState: insights?.learningState || "",
+    topStrengths: insights?.topStrengths || [],
+    criticalWeaknesses: insights?.criticalWeaknesses || [],
+    quickWins: insights?.quickWins || [],
+    focusTopics: insights?.focusTopics || [],
+    predictedImprovement: insights?.predictedImprovement || "",
+  });
+
+  return `You are an academic AI coach chatbot. Be specific, practical, and concise.
+Use the student profile and baseline analysis below.
+If user asks for a plan, provide a structured day-by-day plan.
+If user asks vague questions, ask one short clarifying question before giving advice.
+Avoid generic motivational fluff.
+
+Student profile:
+- Name: ${data.name || "Student"}
+- Predicted grade: ${GRADE_LABELS[predicted]}
+- Study hours/week: ${data.studyHours}
+- Attendance: ${data.attendance}%
+- Assignment completion: ${data.assignmentCompletion}%
+- Exam score: ${data.examScore}/100
+- Motivation: ${["Low", "Medium", "High"][data.motivation]}
+- Stress: ${["Low", "Medium", "High"][data.stressLevel]}
+- Learning style: ${learningStyle}
+- Online courses: ${data.onlineCourses}
+- Uses EdTech tools: ${data.eduTech ? "Yes" : "No"}
+- Discussion participation: ${data.discussions ? "Yes" : "No"}
+
+Risk factors:
+${riskSummary}
+
+Baseline AI analysis:
+${compactInsights}`;
+}
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function App() {
@@ -154,14 +256,54 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [aiError, setAiError] = useState(null);
   const [activeTab, setActiveTab] = useState("overview");
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
 
   const predicted = predictGrade(studentData);
   const risks = computeRisks(studentData);
 
+  async function requestCoachCompletion(messages, { temperature = 0.35, maxTokens = 900 } = {}) {
+    const endpoint = import.meta.env.DEV ? HF_DEV_ENDPOINT : HF_PROD_ENDPOINT;
+    const headers = { "Content-Type": "application/json" };
+
+    if (!import.meta.env.DEV) {
+      const token = import.meta.env.VITE_HF_API_KEY;
+      if (!token) {
+        throw new Error("Missing VITE_HF_API_KEY for Hugging Face API call.");
+      }
+      headers.Authorization = `Bearer ${token}`;
+    }
+
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: HF_MODEL,
+        temperature,
+        max_tokens: maxTokens,
+        messages,
+      }),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Hugging Face API failed (${res.status}): ${errText.slice(0, 240)}`);
+    }
+
+    const data = await res.json();
+    const text = normalizeAssistantContent(data?.choices?.[0]?.message?.content).trim();
+    if (!text) throw new Error("Model returned empty content.");
+    return text;
+  }
+
   async function analyzeWithAI() {
     setLoading(true);
+    setChatLoading(false);
     setAiError(null);
     setAiInsights(null);
+    setChatMessages([]);
+    setChatInput("");
 
     const gradeLabel = GRADE_LABELS[predicted];
     const riskSummary = risks.map(r => `- ${r.factor} (${r.severity}): ${r.msg}`).join("\n");
@@ -214,24 +356,71 @@ Please provide a structured JSON response (and ONLY JSON, no markdown) with this
 }`;
 
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 1000,
-          messages: [{ role: "user", content: prompt }],
-        }),
-      });
-      const data = await res.json();
-      const text = data.content.map(i => i.text || "").join("");
-      const clean = text.replace(/```json|```/g, "").trim();
-      const parsed = JSON.parse(clean);
+      const text = await requestCoachCompletion(
+        [
+          {
+            role: "system",
+            content: "You are an expert AI learning coach. Return ONLY valid JSON matching the requested schema.",
+          },
+          { role: "user", content: prompt },
+        ],
+        { temperature: 0.25, maxTokens: 1000 },
+      );
+      const parsed = JSON.parse(extractJsonPayload(text));
       setAiInsights(parsed);
+      setChatMessages([{ role: "assistant", content: buildCoachIntroMessage(studentData.name || "Student", parsed) }]);
     } catch (e) {
-      setAiError("AI analysis unavailable. Showing data-driven insights based on the dataset.");
+      console.error("AI coach request failed:", e);
+      setAiError("AI Coach unavailable. Add a valid Hugging Face token and retry. Showing data-driven insights instead.");
+      const tips = getDataDrivenTips(studentData);
+      setChatMessages([
+        {
+          role: "assistant",
+          content: [
+            "I could not connect to the online AI model right now.",
+            "",
+            "Here are data-driven recommendations you can apply immediately:",
+            ...tips.map((tip) => `- ${tip}`),
+          ].join("\n"),
+        },
+      ]);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function sendCoachMessage() {
+    const userText = chatInput.trim();
+    if (!userText || chatLoading || !aiInsights) return;
+
+    const userMessage = { role: "user", content: userText };
+    const history = [...chatMessages, userMessage];
+    setChatMessages(history);
+    setChatInput("");
+    setChatLoading(true);
+
+    try {
+      const systemPrompt = buildCoachSystemPrompt(studentData, predicted, risks, aiInsights);
+      const assistantText = await requestCoachCompletion(
+        [
+          { role: "system", content: systemPrompt },
+          ...history.slice(-10).map((m) => ({ role: m.role, content: m.content })),
+        ],
+        { temperature: 0.45, maxTokens: 700 },
+      );
+
+      setChatMessages((prev) => [...prev, { role: "assistant", content: assistantText }]);
+    } catch (e) {
+      console.error("AI chat follow-up failed:", e);
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: "I could not answer that follow-up due to a model/network issue. Please try again in a few seconds.",
+        },
+      ]);
+    } finally {
+      setChatLoading(false);
     }
   }
 
@@ -258,6 +447,12 @@ Please provide a structured JSON response (and ONLY JSON, no markdown) with this
       aiError={aiError}
       activeTab={activeTab}
       setActiveTab={setActiveTab}
+      chatMessages={chatMessages}
+      chatInput={chatInput}
+      setChatInput={setChatInput}
+      chatLoading={chatLoading}
+      canChat={Boolean(aiInsights) && !loading}
+      onSendChat={sendCoachMessage}
       onBack={() => setPage("input")}
     />
   );
@@ -270,9 +465,8 @@ function HomePage({ onStart }) {
       <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
       <div style={S.topBar}>
         <div style={S.logo}>
-          <span style={{ fontSize: 22 }}>◈</span> LearnSight AI
+          <span style={{ fontSize: 22 }}>◈</span> {APP_NAME}
         </div>
-        <span style={S.badge}>BETA · v1.0</span>
       </div>
       <div style={S.hero}>
         <div style={{ fontSize: 13, fontFamily: "'Space Mono', monospace", color: "#38bdf8", marginBottom: 20, letterSpacing: 2 }}>
@@ -314,7 +508,7 @@ function HomePage({ onStart }) {
         <div style={S.grid3}>
           {[
             { step: "01", title: "Input Your Data", desc: "Enter your study habits, attendance, scores, and learning preferences — takes under 2 minutes.", color: "#38bdf8" },
-            { step: "02", title: "AI Analyses Your Pattern", desc: "Claude compares your profile against 14,003 peers and identifies your learning state, strengths, and blind spots.", color: "#6366f1" },
+            { step: "02", title: "AI Analyses Your Pattern", desc: "A Hugging Face online LLM compares your profile against 14,003 peers and identifies your learning state, strengths, and blind spots.", color: "#6366f1" },
             { step: "03", title: "Get Your Action Plan", desc: "Receive a personalized weekly study plan, quick wins, and a long-term improvement roadmap.", color: "#10b981" },
           ].map(s => (
             <div key={s.step} style={S.card}>
@@ -337,7 +531,7 @@ function InputPage({ data, setData, onAnalyze, onBack }) {
     <div style={S.app}>
       <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
       <div style={S.topBar}>
-        <div style={S.logo}><span>◈</span> LearnSight AI</div>
+        <div style={S.logo}><span>◈</span> {APP_NAME}</div>
         <button onClick={onBack} style={{ background: "none", border: "1px solid #1e2d42", color: "#94a3b8", borderRadius: 8, padding: "6px 16px", cursor: "pointer", fontSize: 13 }}>← Back</button>
       </div>
 
@@ -493,7 +687,23 @@ function InputPage({ data, setData, onAnalyze, onBack }) {
 }
 
 // ─── DASHBOARD ────────────────────────────────────────────────────────────────
-function Dashboard({ data, predicted, risks, aiInsights, loading, aiError, activeTab, setActiveTab, onBack }) {
+function Dashboard({
+  data,
+  predicted,
+  risks,
+  aiInsights,
+  loading,
+  aiError,
+  activeTab,
+  setActiveTab,
+  chatMessages,
+  chatInput,
+  setChatInput,
+  chatLoading,
+  canChat,
+  onSendChat,
+  onBack,
+}) {
   const peerRadar = [
     { metric: "Study", you: calcPercentile(data.studyHours, "StudyHours"), peer: 50 },
     { metric: "Attendance", you: calcPercentile(data.attendance, "Attendance"), peer: 50 },
@@ -504,14 +714,19 @@ function Dashboard({ data, predicted, risks, aiInsights, loading, aiError, activ
 
   const name = data.name || "Student";
   const gradeColor = GRADE_COLORS[predicted];
+  const chatEndRef = useRef(null);
 
   const tabs = ["overview", "analysis", "ai-coach", "data-insights"];
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [chatMessages, chatLoading]);
 
   return (
     <div style={S.app}>
       <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
       <div style={S.topBar}>
-        <div style={S.logo}><span>◈</span> LearnSight AI</div>
+        <div style={S.logo}><span>◈</span> {APP_NAME}</div>
         <div style={{ display: "flex", gap: 8 }}>
           {tabs.map(t => (
             <button key={t} onClick={() => setActiveTab(t)} style={{
@@ -797,7 +1012,114 @@ function Dashboard({ data, predicted, risks, aiInsights, loading, aiError, activ
               </div>
             )}
 
-            {aiInsights && !loading && <AIInsightsPanel insights={aiInsights} data={data} />}
+            {aiInsights && !loading && <AIInsightsPanel insights={aiInsights} />}
+
+            {!loading && (
+              <div style={{ ...S.card, padding: 0, minHeight: 520, display: "flex", flexDirection: "column" }}>
+                <div style={{ padding: "16px 20px", borderBottom: "1px solid #1e2d42", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 12, color: "#38bdf8", textTransform: "uppercase", letterSpacing: 1 }}>
+                    AI Coach Chatbot
+                  </div>
+                  <div style={{ fontSize: 11, color: canChat ? "#10b981" : "#f59e0b" }}>
+                    {canChat ? "Online" : "Offline"}
+                  </div>
+                </div>
+
+                <div style={{ flex: 1, overflowY: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 10, background: "#0b1320" }}>
+                  {chatMessages.length === 0 && (
+                    <div style={{ color: "#64748b", fontSize: 13 }}>
+                      The coach is preparing your baseline summary. Once ready, ask any follow-up question.
+                    </div>
+                  )}
+                  {chatMessages.map((m, i) => (
+                    <div key={i} style={{ display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start" }}>
+                      <div
+                        style={{
+                          maxWidth: "86%",
+                          padding: "10px 12px",
+                          borderRadius: 12,
+                          fontSize: 13,
+                          lineHeight: 1.55,
+                          whiteSpace: "pre-wrap",
+                          background: m.role === "user" ? "linear-gradient(135deg, #0ea5e9 0%, #6366f1 100%)" : "#111927",
+                          border: m.role === "user" ? "none" : "1px solid #1e2d42",
+                          color: "#e2e8f0",
+                        }}
+                      >
+                        {m.content}
+                      </div>
+                    </div>
+                  ))}
+                  {chatLoading && (
+                    <div style={{ display: "flex", justifyContent: "flex-start" }}>
+                      <div style={{ background: "#111927", border: "1px solid #1e2d42", borderRadius: 12, padding: "10px 12px", fontSize: 13, color: "#94a3b8" }}>
+                        AI Coach is typing...
+                      </div>
+                    </div>
+                  )}
+                  <div ref={chatEndRef} />
+                </div>
+
+                <div style={{ borderTop: "1px solid #1e2d42", padding: 14, background: "#0d1520" }}>
+                  <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+                    {[
+                      "Build me a 7-day revision plan",
+                      "How can I improve exam score fast?",
+                      "What should I fix first this week?",
+                    ].map((prompt) => (
+                      <button
+                        key={prompt}
+                        onClick={() => setChatInput(prompt)}
+                        disabled={!canChat || chatLoading}
+                        style={{
+                          border: "1px solid #1e2d42",
+                          background: "#111927",
+                          color: "#94a3b8",
+                          borderRadius: 999,
+                          padding: "6px 10px",
+                          fontSize: 11,
+                          cursor: !canChat || chatLoading ? "not-allowed" : "pointer",
+                          opacity: !canChat || chatLoading ? 0.5 : 1,
+                        }}
+                      >
+                        {prompt}
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
+                    <textarea
+                      value={chatInput}
+                      onChange={(e) => setChatInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          onSendChat();
+                        }
+                      }}
+                      disabled={!canChat || chatLoading}
+                      placeholder={canChat ? "Ask your AI Coach a follow-up question..." : "AI model unavailable - add valid token and rerun analysis."}
+                      style={{
+                        ...S.input,
+                        minHeight: 64,
+                        resize: "vertical",
+                      }}
+                    />
+                    <button
+                      onClick={onSendChat}
+                      disabled={!canChat || chatLoading || !chatInput.trim()}
+                      style={{
+                        ...S.primaryBtn,
+                        padding: "12px 18px",
+                        opacity: !canChat || chatLoading || !chatInput.trim() ? 0.5 : 1,
+                        cursor: !canChat || chatLoading || !chatInput.trim() ? "not-allowed" : "pointer",
+                      }}
+                    >
+                      Send
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -882,7 +1204,7 @@ function Dashboard({ data, predicted, risks, aiInsights, loading, aiError, activ
 }
 
 // ─── AI INSIGHTS PANEL ────────────────────────────────────────────────────────
-function AIInsightsPanel({ insights, data }) {
+function AIInsightsPanel({ insights }) {
   return (
     <div>
       {/* Learning State */}
@@ -985,9 +1307,7 @@ function AIInsightsPanel({ insights, data }) {
 }
 
 // ─── FALLBACK INSIGHTS ────────────────────────────────────────────────────────
-function FallbackInsights({ data, risks }) {
-  const highRisks = risks.filter(r => r.severity === "high");
-
+function FallbackInsights({ data }) {
   const tips = [];
   if (data.studyHours < 20) tips.push("Increase study time to at least 20h/week — dataset shows this is the threshold for above-average performance.");
   if (data.attendance < 80) tips.push("Prioritize attending classes — attendance above 80% is strongly linked to a full grade-band improvement.");
