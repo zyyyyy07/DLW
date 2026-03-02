@@ -105,27 +105,4 @@ PowerShell note:
 - Production with backend/proxy: keep token on server side; frontend should not include token.
 - Static frontend-only deployment: may use `VITE_HF_API_KEY`, but this exposes key to browser users and is not recommended.
 
-## Security Notes
-- Do not commit `.env`.
-- Do not place real API tokens in source files.
-- `.env.example` contains placeholders only.
 
-## Judging Criteria Mapping
-### Innovation & Creativity
-- Hybrid architecture: deterministic analytics + online conversational coach.
-- Converts static analytics into interactive coaching and prioritized action plans.
-
-### Technical Implementation
-- Custom end-to-end training script and runtime inference path.
-- Explicit explainability and optimization modules beyond simple charting.
-- Structured AI outputs with schema-driven rendering.
-
-### Impact & Viability
-- Produces concrete weekly actions, not just descriptive metrics.
-- Designed to adapt over time via repeated analyses and trend tracking.
-- Components are modular for future LMS/quiz event stream integration.
-
-### Presentation & Documentation
-- Clear pipeline documentation (data -> model -> explanation -> action -> chat).
-- Interface separates overview, analysis, coach, and data-insights for usability.
-- Security and reproducibility instructions included.
